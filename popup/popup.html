@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Strict Popup Blocker</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div class="brand-text">
+          <h1>Strict Popup Blocker</h1>
+          <p class="tagline">Blindaje contra popups y popunders</p>
+        </div>
+      </header>
+
+      <section class="power" aria-labelledby="power-label">
+        <div class="power-copy">
+          <span id="power-label" class="power-label">Protección</span>
+          <strong id="statusText" class="status-text">Activada</strong>
+        </div>
+        <label class="switch" title="Activar o desactivar el bloqueo">
+          <input
+            type="checkbox"
+            id="enabledToggle"
+            role="switch"
+            aria-checked="true"
+            checked
+          />
+          <span class="track" aria-hidden="true">
+            <span class="thumb"></span>
+            <span class="on-label">ON</span>
+            <span class="off-label">OFF</span>
+          </span>
+        </label>
+      </section>
+
+      <section class="site" aria-live="polite">
+        <div class="site-row">
+          <span class="muted">Sitio actual</span>
+          <strong id="currentHost">—</strong>
+        </div>
+        <button type="button" id="whitelistBtn" class="ghost-btn" disabled>
+          Permitir popups en este sitio
+        </button>
+      </section>
+
+      <section class="stats">
+        <div class="stat">
+          <span class="stat-value" id="blockedCount">0</span>
+          <span class="stat-label">Bloqueados hoy</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="logCount">0</span>
+          <span class="stat-label">En el registro</span>
+        </div>
+      </section>
+
+      <section class="log-wrap">
+        <div class="log-head">
+          <h2>Últimos bloqueos</h2>
+        </div>
+        <ul id="blockLog" class="log"></ul>
+        <p id="emptyLog" class="empty">Aún no hay bloqueos registrados.</p>
+      </section>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
