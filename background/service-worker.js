@@ -1,13 +1,17 @@
 const DEFAULTS = {
-  enabled: true,
   allowedDomains: [],
   blockedToday: 0,
   blockedTodayDate: "",
   blockedLog: [],
+  /** Valor por defecto para ventanas nuevas (siempre OFF salvo que se cambie). */
+  defaultWindowEnabled: false,
 };
 
 const MAX_LOG = 50;
 const RECENT_AUTH_MS = 2500;
+
+/** windowId (number) -> boolean */
+const windowEnabled = new Map();
 
 /** Autorizaciones temporales por gesto explícito (Cmd/Ctrl+clic, clic medio). */
 let pendingAuthorizations = [];
@@ -32,32 +36,31 @@ function consumeAuthorization(hostname) {
 
 const todayKey = () => new Date().toISOString().slice(0, 10);
 
-async function getSettings() {
+async function getPersistedSettings() {
   const data = await chrome.storage.local.get(Object.keys(DEFAULTS));
   return {
-    enabled: data.enabled !== false,
     allowedDomains: Array.isArray(data.allowedDomains)
       ? data.allowedDomains
       : [],
     blockedToday: Number(data.blockedToday) || 0,
     blockedTodayDate: data.blockedTodayDate || "",
     blockedLog: Array.isArray(data.blockedLog) ? data.blockedLog : [],
+    defaultWindowEnabled: data.defaultWindowEnabled === true,
   };
 }
 
 async function ensureDailyCounter(settings) {
   const today = todayKey();
   if (settings.blockedTodayDate === today) return settings;
-  const next = {
-    ...settings,
-    blockedToday: 0,
-    blockedTodayDate: today,
-  };
   await chrome.storage.local.set({
     blockedToday: 0,
     blockedTodayDate: today,
   });
-  return next;
+  return {
+    ...settings,
+    blockedToday: 0,
+    blockedTodayDate: today,
+  };
 }
 
 function isAllowedHost(hostname, allowedDomains) {
@@ -75,8 +78,161 @@ function hostnameFromUrl(url) {
   }
 }
 
+function isBrowserInternalUrl(url) {
+  return /^(chrome(-extension)?:|brave:|about:|edge:|devtools:|chrome-search:)/i.test(
+    url || ""
+  );
+}
+
+/* ─── Estado por ventana ─────────────────────────────────────────── */
+
+async function getDefaultWindowEnabled() {
+  const { defaultWindowEnabled } = await getPersistedSettings();
+  return defaultWindowEnabled === true;
+}
+
+async function isWindowEnabled(windowId) {
+  if (windowId == null || windowId === chrome.windows.WINDOW_ID_NONE) {
+    return false;
+  }
+  if (windowEnabled.has(windowId)) {
+    return windowEnabled.get(windowId) === true;
+  }
+  const fallback = await getDefaultWindowEnabled();
+  windowEnabled.set(windowId, fallback);
+  return fallback;
+}
+
+async function setWindowEnabled(windowId, enabled) {
+  windowEnabled.set(windowId, Boolean(enabled));
+  await persistWindowStates();
+  await notifyWindowTabs(windowId, Boolean(enabled));
+  await refreshBadgesForWindow(windowId);
+}
+
+async function persistWindowStates() {
+  const states = {};
+  for (const [id, value] of windowEnabled.entries()) {
+    states[String(id)] = value;
+  }
+  try {
+    if (chrome.storage.session) {
+      await chrome.storage.session.set({ windowEnabled: states });
+    }
+  } catch {
+    /* session storage no disponible */
+  }
+}
+
+async function restoreWindowStates() {
+  try {
+    if (!chrome.storage.session) return;
+    const data = await chrome.storage.session.get("windowEnabled");
+    const states = data.windowEnabled || {};
+    for (const [id, value] of Object.entries(states)) {
+      windowEnabled.set(Number(id), value === true);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+async function notifyWindowTabs(windowId, enabled) {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ windowId });
+  } catch {
+    return;
+  }
+  const settings = await getPersistedSettings();
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id == null) return;
+      try {
+        await chrome.tabs.sendMessage(tab.id, {
+          type: "WINDOW_SETTINGS",
+          payload: {
+            enabled,
+            allowedDomains: settings.allowedDomains,
+            windowId,
+          },
+        });
+      } catch {
+        /* pestaña sin content script */
+      }
+    })
+  );
+}
+
+async function updateTabBadge(tabId, enabled, blockedToday) {
+  try {
+    if (!enabled) {
+      await chrome.action.setBadgeText({ tabId, text: "OFF" });
+      await chrome.action.setBadgeBackgroundColor({
+        tabId,
+        color: "#6b7280",
+      });
+      return;
+    }
+    const text = blockedToday > 0 ? String(Math.min(blockedToday, 999)) : "ON";
+    await chrome.action.setBadgeText({ tabId, text });
+    await chrome.action.setBadgeBackgroundColor({
+      tabId,
+      color: "#c2410c",
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function refreshBadgesForWindow(windowId) {
+  const settings = await ensureDailyCounter(await getPersistedSettings());
+  const enabled = await isWindowEnabled(windowId);
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ windowId });
+  } catch {
+    return;
+  }
+  await Promise.all(
+    tabs.map((tab) =>
+      tab.id != null
+        ? updateTabBadge(tab.id, enabled, settings.blockedToday)
+        : Promise.resolve()
+    )
+  );
+}
+
+async function refreshBadgeForTab(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const settings = await ensureDailyCounter(await getPersistedSettings());
+    const enabled = await isWindowEnabled(tab.windowId);
+    await updateTabBadge(tabId, enabled, settings.blockedToday);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function refreshAllBadges() {
+  const settings = await ensureDailyCounter(await getPersistedSettings());
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return;
+  }
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id == null) return;
+      const enabled = await isWindowEnabled(tab.windowId);
+      await updateTabBadge(tab.id, enabled, settings.blockedToday);
+    })
+  );
+}
+
 async function recordBlock(entry) {
-  let settings = await getSettings();
+  let settings = await getPersistedSettings();
   settings = await ensureDailyCounter(settings);
 
   const blockedToday = settings.blockedToday + 1;
@@ -96,51 +252,85 @@ async function recordBlock(entry) {
     blockedLog,
   });
 
-  updateBadge(blockedToday, settings.enabled);
+  await refreshAllBadges();
 }
 
-async function updateBadge(count, enabled) {
+async function getWindowIdFromTabId(tabId) {
+  if (tabId == null) return null;
   try {
-    if (!enabled) {
-      await chrome.action.setBadgeText({ text: "OFF" });
-      await chrome.action.setBadgeBackgroundColor({ color: "#6b7280" });
-      return;
-    }
-    const text = count > 0 ? String(Math.min(count, 999)) : "";
-    await chrome.action.setBadgeText({ text });
-    await chrome.action.setBadgeBackgroundColor({ color: "#c2410c" });
+    const tab = await chrome.tabs.get(tabId);
+    return tab.windowId;
   } catch {
-    /* ignore */
+    return null;
   }
 }
 
-async function refreshBadge() {
-  const settings = await ensureDailyCounter(await getSettings());
-  await updateBadge(settings.blockedToday, settings.enabled);
+/**
+ * ¿La ventana de origen tiene el bloqueo activo?
+ * Usamos el opener / source, no la ventana recién creada.
+ */
+async function isProtectionActiveForSourceTab(tabId) {
+  const windowId = await getWindowIdFromTabId(tabId);
+  if (windowId == null) return false;
+  return isWindowEnabled(windowId);
 }
 
+/* ─── Ciclo de vida ──────────────────────────────────────────────── */
+
 chrome.runtime.onInstalled.addListener(async () => {
-  const existing = await chrome.storage.local.get(Object.keys(DEFAULTS));
+  const existing = await chrome.storage.local.get([
+    ...Object.keys(DEFAULTS),
+    "enabled",
+  ]);
   const toSet = {};
   for (const [key, value] of Object.entries(DEFAULTS)) {
     if (existing[key] === undefined) toSet[key] = value;
   }
+  // Migración: el antiguo flag global ya no controla todo el navegador.
+  if (existing.enabled !== undefined && existing.defaultWindowEnabled === undefined) {
+    toSet.defaultWindowEnabled = false;
+  }
   if (Object.keys(toSet).length) {
     await chrome.storage.local.set(toSet);
   }
-  await refreshBadge();
+  await restoreWindowStates();
+  await refreshAllBadges();
 });
 
-chrome.runtime.onStartup.addListener(() => {
-  refreshBadge();
+chrome.runtime.onStartup.addListener(async () => {
+  await restoreWindowStates();
+  await refreshAllBadges();
+});
+
+chrome.windows.onCreated.addListener(async (win) => {
+  if (win.id == null || win.type === "popup") return;
+  if (!windowEnabled.has(win.id)) {
+    windowEnabled.set(win.id, await getDefaultWindowEnabled());
+    await persistWindowStates();
+  }
+});
+
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  windowEnabled.delete(windowId);
+  await persistWindowStates();
+});
+
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  await refreshBadgeForTab(tabId);
+});
+
+chrome.tabs.onCreated.addListener(async (tab) => {
+  if (tab.id != null) await refreshBadgeForTab(tab.id);
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes.enabled || changes.blockedToday) {
-    refreshBadge();
+  if (changes.blockedToday || changes.allowedDomains) {
+    refreshAllBadges();
   }
 });
+
+/* ─── Mensajes ───────────────────────────────────────────────────── */
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") return;
@@ -160,43 +350,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       hostname: message.payload?.hostname || "",
       reason: message.payload?.reason || "",
       at: Date.now(),
+      windowId: sender.tab?.windowId,
     });
     pruneAuthorizations();
     sendResponse({ ok: true });
     return false;
   }
 
-  if (message.type === "GET_STATUS") {
-    getSettings()
-      .then((s) => ensureDailyCounter(s))
-      .then((s) => sendResponse(s));
+  if (message.type === "GET_WINDOW_STATE") {
+    (async () => {
+      const windowId =
+        message.windowId ??
+        sender.tab?.windowId ??
+        (
+          await chrome.windows.getCurrent().catch(() => null)
+        )?.id;
+      const settings = await ensureDailyCounter(await getPersistedSettings());
+      const enabled = await isWindowEnabled(windowId);
+      sendResponse({
+        windowId,
+        enabled,
+        allowedDomains: settings.allowedDomains,
+        blockedToday: settings.blockedToday,
+        blockedLog: settings.blockedLog,
+      });
+    })();
+    return true;
+  }
+
+  if (message.type === "SET_WINDOW_ENABLED") {
+    (async () => {
+      let windowId = message.windowId;
+      if (windowId == null) {
+        const win = await chrome.windows.getCurrent();
+        windowId = win.id;
+      }
+      await setWindowEnabled(windowId, message.enabled === true);
+      sendResponse({ ok: true, windowId, enabled: message.enabled === true });
+    })();
     return true;
   }
 
   return false;
 });
 
-function isBrowserInternalUrl(url) {
-  return /^(chrome(-extension)?:|brave:|about:|edge:|devtools:|chrome-search:)/i.test(
-    url || ""
-  );
-}
+/* ─── Defensas de cierre (solo si la ventana origen está ON) ─────── */
 
-/**
- * Última línea de defensa para ventanas tipo popup y pestañas con opener
- * que no fueron autorizadas por gesto explícito ni whitelist.
- */
-async function shouldCloseCreatedTab(tab, { onlyPopups = false } = {}) {
-  const settings = await getSettings();
-  if (!settings.enabled) return { close: false };
-
+async function shouldCloseCreatedTab(tab) {
   if (authorizedTabIds.has(tab.id)) {
     authorizedTabIds.delete(tab.id);
     return { close: false };
   }
 
-  // Sin opener: Nueva pestaña (Cmd+T), enlace desde UI del navegador, etc.
   if (tab.openerTabId == null) return { close: false };
+
+  const sourceActive = await isProtectionActiveForSourceTab(tab.openerTabId);
+  if (!sourceActive) return { close: false };
+
+  const settings = await getPersistedSettings();
 
   let openerHost = "";
   try {
@@ -217,10 +428,6 @@ async function shouldCloseCreatedTab(tab, { onlyPopups = false } = {}) {
   const pending = tab.pendingUrl || tab.url || "";
   if (isBrowserInternalUrl(pending)) return { close: false };
 
-  if (onlyPopups) {
-    return { close: false };
-  }
-
   return {
     close: true,
     domain: openerHost || hostnameFromUrl(pending),
@@ -230,33 +437,25 @@ async function shouldCloseCreatedTab(tab, { onlyPopups = false } = {}) {
 
 chrome.windows.onCreated.addListener(async (win) => {
   try {
-    const settings = await getSettings();
-    if (!settings.enabled) return;
-
-    // Ventanas popup son casi siempre no deseadas cuando la protección está ON.
     if (win.type !== "popup") return;
 
     const tabs = await chrome.tabs.query({ windowId: win.id });
     const tab = tabs[0];
-    if (!tab) {
-      await chrome.windows.remove(win.id);
-      await recordBlock({
-        domain: "",
-        target: "",
-        type: "window.popup",
-        timestamp: Date.now(),
-      });
-      return;
-    }
 
+    if (!tab) return;
+
+    if (tab.openerTabId == null) return;
+
+    const sourceActive = await isProtectionActiveForSourceTab(tab.openerTabId);
+    if (!sourceActive) return;
+
+    const settings = await getPersistedSettings();
     let openerHost = "";
-    if (tab.openerTabId != null) {
-      try {
-        const opener = await chrome.tabs.get(tab.openerTabId);
-        openerHost = hostnameFromUrl(opener.url || opener.pendingUrl || "");
-      } catch {
-        /* ignore */
-      }
+    try {
+      const opener = await chrome.tabs.get(tab.openerTabId);
+      openerHost = hostnameFromUrl(opener.url || opener.pendingUrl || "");
+    } catch {
+      /* ignore */
     }
 
     if (openerHost && isAllowedHost(openerHost, settings.allowedDomains)) {
@@ -276,15 +475,14 @@ chrome.windows.onCreated.addListener(async (win) => {
   }
 });
 
-/**
- * Cierra destinos de navegación creados por la página (window.open / _blank)
- * salvo whitelist o autorización explícita (Cmd/Ctrl+clic).
- */
 chrome.webNavigation.onCreatedNavigationTarget.addListener(async (details) => {
   try {
-    const settings = await getSettings();
-    if (!settings.enabled) return;
+    const sourceActive = await isProtectionActiveForSourceTab(
+      details.sourceTabId
+    );
+    if (!sourceActive) return;
 
+    const settings = await getPersistedSettings();
     let sourceHost = "";
     try {
       const sourceTab = await chrome.tabs.get(details.sourceTabId);
@@ -322,10 +520,8 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(async (details) => {
   }
 });
 
-/** Refuerzo: pestañas hijas no autorizadas que escaparon a las otras capas. */
 chrome.tabs.onCreated.addListener(async (tab) => {
   try {
-    // Dar un instante a onCreatedNavigationTarget / AUTHORIZE_NEXT_TAB.
     await new Promise((r) => setTimeout(r, 60));
     if (authorizedTabIds.has(tab.id)) return;
 
@@ -344,4 +540,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   }
 });
 
-refreshBadge();
+(async () => {
+  await restoreWindowStates();
+  await refreshAllBadges();
+})();

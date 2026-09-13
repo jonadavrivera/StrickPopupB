@@ -5,7 +5,8 @@
   if (window[STATE_KEY]) return;
   window[STATE_KEY] = true;
 
-  let enabled = true;
+  // OFF hasta recibir el estado de la ventana actual.
+  let enabled = false;
   let allowedDomains = [];
 
   const notifyBlocked = (url, type) => {

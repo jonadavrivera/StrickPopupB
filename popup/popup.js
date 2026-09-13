@@ -1,6 +1,7 @@
 const enabledToggle = document.getElementById("enabledToggle");
 const statusText = document.getElementById("statusText");
 const powerSection = document.querySelector(".power");
+const scopeHint = document.getElementById("scopeHint");
 const currentHostEl = document.getElementById("currentHost");
 const whitelistBtn = document.getElementById("whitelistBtn");
 const blockedCountEl = document.getElementById("blockedCount");
@@ -10,12 +11,12 @@ const emptyLogEl = document.getElementById("emptyLog");
 
 let currentHost = "";
 let allowedDomains = [];
+let currentWindowId = null;
 
 function rootDomain(hostname) {
   if (!hostname) return "";
   const parts = hostname.split(".").filter(Boolean);
   if (parts.length <= 2) return hostname;
-  // Heurística simple: conservar últimos 2 segmentos.
   return parts.slice(-2).join(".");
 }
 
@@ -53,6 +54,11 @@ function renderPower(enabled) {
   statusText.textContent = enabled ? "Activada" : "Desactivada";
   powerSection.classList.toggle("is-on", enabled);
   powerSection.classList.toggle("is-off", !enabled);
+  if (scopeHint) {
+    scopeHint.textContent = enabled
+      ? "Activa solo en esta ventana"
+      : "Apagada en esta ventana";
+  }
 }
 
 function renderWhitelist() {
@@ -107,7 +113,10 @@ async function loadCurrentTabHost() {
       currentWindow: true,
     });
     const url = tab?.url || "";
-    if (!url || /^(chrome|brave|edge|about|devtools|chrome-extension):/i.test(url)) {
+    if (
+      !url ||
+      /^(chrome|brave|edge|about|devtools|chrome-extension):/i.test(url)
+    ) {
       currentHost = "";
       currentHostEl.textContent = "Página interna del navegador";
       return;
@@ -121,29 +130,26 @@ async function loadCurrentTabHost() {
 }
 
 async function refresh() {
-  const data = await chrome.storage.local.get([
-    "enabled",
-    "allowedDomains",
-    "blockedToday",
-    "blockedTodayDate",
-    "blockedLog",
-  ]);
-
-  const enabled = data.enabled !== false;
-  allowedDomains = Array.isArray(data.allowedDomains)
-    ? data.allowedDomains
+  const state = await chrome.runtime.sendMessage({ type: "GET_WINDOW_STATE" });
+  currentWindowId = state?.windowId ?? null;
+  allowedDomains = Array.isArray(state?.allowedDomains)
+    ? state.allowedDomains
     : [];
 
-  renderPower(enabled);
-  blockedCountEl.textContent = String(Number(data.blockedToday) || 0);
-  renderLog(data.blockedLog);
+  renderPower(state?.enabled === true);
+  blockedCountEl.textContent = String(Number(state?.blockedToday) || 0);
+  renderLog(state?.blockedLog);
   renderWhitelist();
 }
 
 enabledToggle.addEventListener("change", async () => {
   const enabled = enabledToggle.checked;
   renderPower(enabled);
-  await chrome.storage.local.set({ enabled });
+  await chrome.runtime.sendMessage({
+    type: "SET_WINDOW_ENABLED",
+    windowId: currentWindowId,
+    enabled,
+  });
 });
 
 whitelistBtn.addEventListener("click", async () => {
@@ -159,10 +165,8 @@ whitelistBtn.addEventListener("click", async () => {
         !currentHost.endsWith(`.${d}`) &&
         d !== domain
     );
-  } else {
-    if (!allowedDomains.includes(domain)) {
-      allowedDomains = [...allowedDomains, domain];
-    }
+  } else if (!allowedDomains.includes(domain)) {
+    allowedDomains = [...allowedDomains, domain];
   }
 
   await chrome.storage.local.set({ allowedDomains });
@@ -171,7 +175,9 @@ whitelistBtn.addEventListener("click", async () => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  refresh();
+  if (changes.blockedToday || changes.blockedLog || changes.allowedDomains) {
+    refresh();
+  }
 });
 
 (async () => {

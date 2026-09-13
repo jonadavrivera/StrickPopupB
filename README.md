@@ -1,6 +1,6 @@
 # Strict Popup Blocker
 
-Extensión Manifest V3 para **Brave** y otros navegadores basados en Chromium. Bloquea ventanas emergentes, popunders y pestañas abiertas por JavaScript de forma agresiva, con un interruptor **ON/OFF** y whitelist por sitio.
+Extensión Manifest V3 para **Brave** y otros navegadores basados en Chromium. Bloquea ventanas emergentes, popunders y pestañas abiertas por JavaScript de forma agresiva, con un interruptor **ON/OFF por ventana** y whitelist por sitio.
 
 > Brave ya bloquea muchos popups con Shields. Esta extensión cubre el hueco que queda: `window.open` disparado tras un clic “válido”, popunders y nuevas pestañas generadas por la página.
 
@@ -8,7 +8,7 @@ Extensión Manifest V3 para **Brave** y otros navegadores basados en Chromium. B
 
 ## ¿Qué hace?
 
-Con la protección **activada**:
+Con la protección **activada en una ventana**:
 
 
 | Capa                       | Comportamiento                                                                        |
@@ -21,7 +21,13 @@ Con la protección **activada**:
 | Refuerzo `tabs.onCreated`  | Cierra pestañas hijas no autorizadas que se escaparon                                 |
 
 
-Con la protección **desactivada**, la extensión no interviene.
+El interruptor es **por ventana del navegador**, no global:
+
+- Ventana A en **ON** → bloquea popups solo ahí
+- Ventana B (u otra normal / incógnito) en **OFF** → no interviene
+- Toda ventana nueva arranca en **OFF**
+
+Así puedes activarlo solo en incógnito (o en una ventana concreta) y dejar el resto apagado.
 
 **Excepciones intencionadas** (para no romper el uso normal del navegador):
 
@@ -61,13 +67,19 @@ El content script vive en un **mundo aislado**. Si solo haces `window.open = …
 
 Por eso `content.js` inyecta `injected/popup-interceptor.js` en el contexto de la página (`document_start`) y sella la propiedad con `Object.defineProperty`.
 
-### Flujo del interruptor ON/OFF
+### Flujo del interruptor ON/OFF (por ventana)
 
-1. El estado se guarda en `chrome.storage.local` (`enabled`).
-2. El popup actualiza ese valor al mover el switch.
-3. Content e injected reciben el cambio y dejan de bloquear (o vuelven a bloquear).
-4. El service worker también respeta `enabled` antes de cerrar pestañas/ventanas.
-5. El badge del icono muestra `OFF` o el número de bloqueos del día.
+1. El estado se guarda **por `windowId`** en memoria (+ `chrome.storage.session` para sobrevivir al reinicio del service worker).
+2. El popup pregunta/actualiza solo la ventana desde la que lo abriste.
+3. Content e injected reciben el estado de **esa** ventana y bloquean o no en consecuencia.
+4. El service worker solo cierra popups/pestañas si la **ventana de origen** tenía la protección ON.
+5. El badge del icono es por pestaña (`ON` / `OFF` / contador) según la ventana de esa pestaña.
+
+### Incógnito
+
+1. En `brave://extensions` → Strict Popup Blocker → activa **Permitir en privado** / **Allow in Incognito**.
+2. Abre una ventana de incógnito y enciende el switch ahí.
+3. Tus ventanas normales siguen en OFF (arranque por defecto).
 
 
 
@@ -143,8 +155,8 @@ No requiere build ni dependencias de npm.
 
 ## Uso
 
-1. Haz clic en el icono de la extensión.
-2. Usa el interruptor **ON / OFF** para activar o desactivar la protección.
+1. Haz clic en el icono de la extensión **desde la ventana** donde quieras protegerte.
+2. Usa el interruptor **ON / OFF** (solo afecta a esa ventana).
 3. Revisa el **sitio actual**.
 4. Si un sitio legítimo necesita popups, pulsa **Permitir popups en este sitio**.
 5. Consulta **Bloqueados hoy** y el listado de **Últimos bloqueos**.

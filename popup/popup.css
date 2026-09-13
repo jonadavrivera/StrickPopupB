@@ -132,6 +132,12 @@ body {
   font-weight: 700;
 }
 
+.scope-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 .power.is-on .status-text {
   color: #fdba74;
 }

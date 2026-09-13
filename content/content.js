@@ -1,8 +1,10 @@
 (() => {
   "use strict";
 
-  let enabled = true;
+  // Por defecto OFF hasta saber el estado de ESTA ventana.
+  let enabled = false;
   let allowedDomains = [];
+  let windowId = null;
   let userGestureAt = 0;
   let lastClickHref = "";
   let lastClickAt = 0;
@@ -26,6 +28,15 @@
       },
       "*"
     );
+  };
+
+  const applySettings = (next) => {
+    if (typeof next.enabled === "boolean") enabled = next.enabled;
+    if (Array.isArray(next.allowedDomains)) {
+      allowedDomains = next.allowedDomains;
+    }
+    if (next.windowId != null) windowId = next.windowId;
+    pushSettingsToPage();
   };
 
   const injectInterceptor = () => {
@@ -60,21 +71,21 @@
 
   const loadSettings = async () => {
     try {
-      const data = await chrome.storage.local.get([
-        "enabled",
-        "allowedDomains",
-      ]);
-      enabled = data.enabled !== false;
-      allowedDomains = Array.isArray(data.allowedDomains)
-        ? data.allowedDomains
-        : [];
-      pushSettingsToPage();
+      const state = await chrome.runtime.sendMessage({
+        type: "GET_WINDOW_STATE",
+      });
+      if (state) {
+        applySettings({
+          enabled: state.enabled === true,
+          allowedDomains: state.allowedDomains,
+          windowId: state.windowId,
+        });
+      }
     } catch {
       /* ignore */
     }
   };
 
-  // Inyectar lo antes posible.
   injectInterceptor();
   loadSettings();
 
@@ -87,20 +98,21 @@
     recordBlock(detail.url, detail.type || "window.open");
   });
 
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || message.type !== "WINDOW_SETTINGS") return;
+    applySettings(message.payload || {});
+  });
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes.enabled) {
-      enabled = changes.enabled.newValue !== false;
-    }
     if (changes.allowedDomains) {
       allowedDomains = Array.isArray(changes.allowedDomains.newValue)
         ? changes.allowedDomains.newValue
         : [];
+      pushSettingsToPage();
     }
-    pushSettingsToPage();
   });
 
-  // Registrar gestos (para telemetría / futuras heurísticas).
   const markGesture = () => {
     userGestureAt = Date.now();
   };
@@ -123,10 +135,6 @@
     }
   };
 
-  /**
-   * target="_blank" sin modificadores → bloquear (patrón típico de popup).
-   * Cmd/Ctrl/Shift/clic medio → autorizar pestaña (intención explícita del usuario).
-   */
   document.addEventListener(
     "click",
     (event) => {
@@ -177,7 +185,6 @@
     (event) => {
       if (!enabled || currentAllowed()) return;
       if (event.button !== 1) return;
-      // Clic medio = abrir en nueva pestaña de forma deliberada.
       authorizeNextTab("auxclick");
     },
     true
@@ -204,13 +211,15 @@
     true
   );
 
-  // Exponer estado para depuración.
   window.__strictPopupBlockerContent = {
     get enabled() {
       return enabled;
     },
     get allowed() {
       return currentAllowed();
+    },
+    get windowId() {
+      return windowId;
     },
     get lastClick() {
       return { href: lastClickHref, at: lastClickAt, gestureAt: userGestureAt };
