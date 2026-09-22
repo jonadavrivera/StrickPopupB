@@ -12,17 +12,17 @@
         <div class="brand-mark" aria-hidden="true"></div>
         <div class="brand-text">
           <h1>Strict Popup Blocker</h1>
-          <p class="tagline">Bloqueo por ventana · popups y popunders</p>
+          <p class="tagline">Popups por ventana · capas opcionales</p>
         </div>
       </header>
 
       <section class="power" aria-labelledby="power-label">
         <div class="power-copy">
-          <span id="power-label" class="power-label">Protección</span>
+          <span id="power-label" class="power-label">Popups</span>
           <strong id="statusText" class="status-text">Desactivada</strong>
           <span id="scopeHint" class="scope-hint">Apagada en esta ventana</span>
         </div>
-        <label class="switch" title="Activar o desactivar el bloqueo en esta ventana">
+        <label class="switch" title="Bloquear popups externos en esta ventana">
           <input
             type="checkbox"
             id="enabledToggle"
@@ -43,8 +43,56 @@
           <strong id="currentHost">—</strong>
         </div>
         <button type="button" id="whitelistBtn" class="ghost-btn" disabled>
-          Permitir popups en este sitio
+          Permitir excepciones en este sitio
         </button>
+      </section>
+
+      <section class="layers" aria-labelledby="layers-title">
+        <div class="layers-head">
+          <h2 id="layers-title">Capas extras</h2>
+          <p class="layers-note">
+            Apagadas por defecto. Solo aplican si Popups está ON.
+          </p>
+        </div>
+        <label class="layer-row">
+          <span>
+            <strong>Cookies JS</strong>
+            <small>document.cookie / Cookie Store</small>
+          </span>
+          <input type="checkbox" id="layerCookiesJs" data-layer="cookiesJs" />
+        </label>
+        <label class="layer-row warn">
+          <span>
+            <strong>Cookies HTTP</strong>
+            <small>Puede cerrar la sesión del sitio</small>
+          </span>
+          <input
+            type="checkbox"
+            id="layerCookiesHttp"
+            data-layer="cookiesHttp"
+          />
+        </label>
+        <label class="layer-row">
+          <span>
+            <strong>Descargas</strong>
+            <small>Cancela descargas del sitio</small>
+          </span>
+          <input type="checkbox" id="layerDownloads" data-layer="downloads" />
+        </label>
+        <label class="layer-row warn">
+          <span>
+            <strong>Storage</strong>
+            <small>localStorage / sessionStorage</small>
+          </span>
+          <input type="checkbox" id="layerStorage" data-layer="storage" />
+        </label>
+        <label class="layer-row">
+          <span>
+            <strong>Trackers</strong>
+            <small>Beacon, SW, notificaciones, clipboard</small>
+          </span>
+          <input type="checkbox" id="layerTrackers" data-layer="trackers" />
+        </label>
       </section>
 
       <section class="stats">

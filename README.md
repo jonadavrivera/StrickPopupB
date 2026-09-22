@@ -1,6 +1,6 @@
 # Strict Popup Blocker
 
-Extensión Manifest V3 para **Brave** y otros navegadores basados en Chromium. Bloquea ventanas emergentes, popunders y pestañas abiertas por JavaScript de forma agresiva, con un interruptor **ON/OFF por ventana** y whitelist por sitio.
+Extensión Manifest V3 para **Brave** y otros navegadores basados en Chromium. Bloqueo de **popups por ventana**, con **capas opcionales** (cookies, descargas, storage, trackers) apagadas por defecto para no romper el uso normal de la web.
 
 > Brave ya bloquea muchos popups con Shields. Esta extensión cubre el hueco que queda: `window.open` disparado tras un clic “válido”, popunders y nuevas pestañas generadas por la página.
 
@@ -19,15 +19,20 @@ Con la protección **activada en una ventana**:
 | Ventanas `popup`           | Las cierra al crearse                                                                 |
 | Navegación a nueva pestaña | Cierra destinos creados por la web (`webNavigation`)                                  |
 | Refuerzo `tabs.onCreated`  | Cierra pestañas hijas no autorizadas que se escaparon                                 |
+| Cookies JS                 | Opcional: bloquea `document.cookie` y Cookie Store                                    |
+| Cookies HTTP               | Opcional: quita `Cookie` / `Set-Cookie` (puede cerrar sesión)                         |
+| Descargas                  | Opcional: cancela descargas iniciadas por el sitio                                    |
+| Storage                    | Opcional: bloquea `localStorage` / `sessionStorage`                                   |
+| Trackers                   | Opcional: beacon, service workers, notificaciones, clipboard                          |
 
 
-El interruptor es **por ventana del navegador**, no global:
+El interruptor principal (**Popups**) es **por ventana**:
 
-- Ventana A en **ON** → bloquea popups solo ahí
-- Ventana B (u otra normal / incógnito) en **OFF** → no interviene
+- Ventana A en **ON** → bloquea popups/pestañas **externas** solo ahí
+- Ventana B en **OFF** → no interviene
 - Toda ventana nueva arranca en **OFF**
 
-Así puedes activarlo solo en incógnito (o en una ventana concreta) y dejar el resto apagado.
+Las **capas extras** (cookies, descargas, storage, trackers) están **apagadas por defecto**. Solo se aplican si Popups está ON y tú las activas. Así el sitio sigue funcionando en el día a día.
 
 **Excepciones intencionadas** (para no romper el uso normal del navegador):
 
@@ -155,11 +160,11 @@ No requiere build ni dependencias de npm.
 
 ## Uso
 
-1. Haz clic en el icono de la extensión **desde la ventana** donde quieras protegerte.
-2. Usa el interruptor **ON / OFF** (solo afecta a esa ventana).
-3. Revisa el **sitio actual**.
-4. Si un sitio legítimo necesita popups, pulsa **Permitir popups en este sitio**.
-5. Consulta **Bloqueados hoy** y el listado de **Últimos bloqueos**.
+1. Haz clic en el icono **desde la ventana** donde quieras protegerte.
+2. Activa **Popups** (ON) — solo bloquea aperturas externas.
+3. Si el sitio es sospechoso, enciende **capas extras** una a una.
+4. Usa **Permitir excepciones** si un dominio de confianza se rompe.
+5. Consulta el contador y el registro de bloqueos.
 
 ---
 
@@ -168,14 +173,15 @@ No requiere build ni dependencias de npm.
 ## Permisos
 
 
-| Permiso         | Motivo                                                     |
-| --------------- | ---------------------------------------------------------- |
-| `storage`       | Guardar ON/OFF, whitelist, contador y registro             |
-| `tabs`          | Detectar y cerrar pestañas hijas no autorizadas            |
-| `windows`       | Cerrar ventanas de tipo `popup`                            |
-| `webNavigation` | Detectar aperturas a nueva pestaña iniciadas por la página |
-| `scripting`     | Soporte de inyección / scripts en páginas                  |
-| `<all_urls>`    | Interceptar popups en cualquier sitio                      |
+| Permiso                                  | Motivo                                                          |
+| ---------------------------------------- | --------------------------------------------------------------- |
+| `storage`                                | Guardar whitelist, contador y registro                          |
+| `tabs` / `windows`                       | Estado por ventana y cierre de popups                           |
+| `webNavigation`                          | Detectar aperturas a nueva pestaña iniciadas por la página      |
+| `scripting`                              | Inyección de scripts en páginas                                 |
+| `downloads`                              | Cancelar descargas desde ventanas protegidas                    |
+| `declarativeNetRequestWithHostAccess`    | Quitar cabeceras Cookie / Set-Cookie en pestañas protegidas     |
+| `<all_urls>`                             | Aplicar lockdown en cualquier sitio                             |
 
 
 ---
@@ -184,13 +190,15 @@ No requiere build ni dependencias de npm.
 
 ## Limitaciones
 
-No existe un bloqueo **100 % infalible** desde una extensión: algunas aperturas ocurren fuera del alcance del content script. Esta extensión combina varias capas para acercarse lo máximo posible.
+No existe un lockdown **100 % infalible** desde una extensión. Se combinan varias capas para acercarse lo máximo posible.
 
 Casos a tener en cuenta:
 
-- Sitios que dependen de popups reales (OAuth, pagos, impresiones) → usa la whitelist o desactiva temporalmente.
-- Redirecciones en la misma pestaña (`location.href = …`) no son popups; esta versión no las trata como tal.
-- Brave Shields y esta extensión pueden convivir; no se sustituyen entre sí.
+- Con solo **Popups ON**, la mayoría de sitios deberían seguir usable (se permiten aperturas al mismo dominio).
+- **Cookies HTTP** y **Storage** son las capas más agresivas: actívalas solo en sitios dudosos.
+- Sitios con OAuth/pagos en dominios externos pueden necesitar whitelist o Popups OFF un momento.
+- Redirecciones en la misma pestaña (`location.href = …`) no se cancelan en esta versión.
+- Brave Shields y esta extensión pueden convivir.
 
 ---
 
@@ -201,13 +209,13 @@ Casos a tener en cuenta:
 1. Edita los archivos fuente.
 2. En `brave://extensions`, pulsa **Recargar** en la extensión.
 3. Recarga las pestañas abiertas para que el content script se reinjecte.
-4. Abre la consola de la página y del service worker para ver mensajes `[Strict Popup Blocker]`.
+4. Abre la consola de la página y del service worker para ver mensajes `[Strict Lockdown]`.
 
 Ideas para versiones futuras:
 
-- Modos Normal / Estricto / Muy estricto
+- Interruptores independientes por capa (cookies / descargas / storage)
 - Página de opciones con whitelist editable
-- Filtro de redirecciones sospechosas con `declarativeNetRequest`
+- Filtro de redirecciones sospechosas
 - Lista de dominios publicitarios conocidos
 
 ---

@@ -1,10 +1,18 @@
+const DEFAULT_LAYERS = {
+  cookiesJs: false,
+  cookiesHttp: false,
+  downloads: false,
+  storage: false,
+  trackers: false,
+};
+
 const DEFAULTS = {
   allowedDomains: [],
   blockedToday: 0,
   blockedTodayDate: "",
   blockedLog: [],
-  /** Valor por defecto para ventanas nuevas (siempre OFF salvo que se cambie). */
   defaultWindowEnabled: false,
+  layers: { ...DEFAULT_LAYERS },
 };
 
 const MAX_LOG = 50;
@@ -36,6 +44,17 @@ function consumeAuthorization(hostname) {
 
 const todayKey = () => new Date().toISOString().slice(0, 10);
 
+function normalizeLayers(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  return {
+    cookiesJs: src.cookiesJs === true,
+    cookiesHttp: src.cookiesHttp === true,
+    downloads: src.downloads === true,
+    storage: src.storage === true,
+    trackers: src.trackers === true,
+  };
+}
+
 async function getPersistedSettings() {
   const data = await chrome.storage.local.get(Object.keys(DEFAULTS));
   return {
@@ -46,6 +65,7 @@ async function getPersistedSettings() {
     blockedTodayDate: data.blockedTodayDate || "",
     blockedLog: Array.isArray(data.blockedLog) ? data.blockedLog : [],
     defaultWindowEnabled: data.defaultWindowEnabled === true,
+    layers: normalizeLayers(data.layers),
   };
 }
 
@@ -108,6 +128,7 @@ async function setWindowEnabled(windowId, enabled) {
   await persistWindowStates();
   await notifyWindowTabs(windowId, Boolean(enabled));
   await refreshBadgesForWindow(windowId);
+  await refreshNetworkLockdownRules();
 }
 
 async function persistWindowStates() {
@@ -154,11 +175,41 @@ async function notifyWindowTabs(windowId, enabled) {
           payload: {
             enabled,
             allowedDomains: settings.allowedDomains,
+            layers: settings.layers,
             windowId,
           },
         });
       } catch {
         /* pestaña sin content script */
+      }
+    })
+  );
+}
+
+async function broadcastLayersToAllTabs() {
+  const settings = await getPersistedSettings();
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return;
+  }
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id == null) return;
+      const enabled = await isWindowEnabled(tab.windowId);
+      try {
+        await chrome.tabs.sendMessage(tab.id, {
+          type: "WINDOW_SETTINGS",
+          payload: {
+            enabled,
+            allowedDomains: settings.allowedDomains,
+            layers: settings.layers,
+            windowId: tab.windowId,
+          },
+        });
+      } catch {
+        /* ignore */
       }
     })
   );
@@ -275,6 +326,119 @@ async function isProtectionActiveForSourceTab(tabId) {
   return isWindowEnabled(windowId);
 }
 
+/* ─── Lockdown de red: cookies HTTP en pestañas protegidas ───────── */
+
+const DNR_COOKIE_RULE_ID = 9001;
+
+async function getProtectedTabIds() {
+  const settings = await getPersistedSettings();
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return [];
+  }
+  const ids = [];
+  for (const tab of tabs) {
+    if (tab.id == null) continue;
+    if (!(await isWindowEnabled(tab.windowId))) continue;
+    const host = hostnameFromUrl(tab.url || tab.pendingUrl || "");
+    if (host && isAllowedHost(host, settings.allowedDomains)) continue;
+    ids.push(tab.id);
+  }
+  return ids;
+}
+
+async function refreshNetworkLockdownRules() {
+  if (!chrome.declarativeNetRequest?.updateSessionRules) return;
+
+  const settings = await getPersistedSettings();
+  const removeRuleIds = [DNR_COOKIE_RULE_ID];
+  const addRules = [];
+
+  // Solo aplica si la capa HTTP está activa (evita romper logins por defecto).
+  if (settings.layers.cookiesHttp) {
+    const tabIds = await getProtectedTabIds();
+    if (tabIds.length > 0) {
+      addRules.push({
+        id: DNR_COOKIE_RULE_ID,
+        priority: 1,
+        action: {
+          type: "modifyHeaders",
+          requestHeaders: [{ header: "cookie", operation: "remove" }],
+          responseHeaders: [{ header: "set-cookie", operation: "remove" }],
+        },
+        condition: {
+          tabIds,
+          resourceTypes: [
+            "main_frame",
+            "sub_frame",
+            "stylesheet",
+            "script",
+            "image",
+            "font",
+            "object",
+            "xmlhttprequest",
+            "ping",
+            "csp_report",
+            "media",
+            "websocket",
+            "webtransport",
+            "other",
+          ],
+        },
+      });
+    }
+  }
+
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds,
+      addRules,
+    });
+  } catch (err) {
+    console.warn("[Strict Popup Blocker] Reglas DNR:", err);
+  }
+}
+
+async function downloadMatchesProtectedTab(item) {
+  const settings = await getPersistedSettings();
+  if (!settings.layers.downloads) return { match: false };
+
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return { match: false };
+  }
+
+  const referrer = item.referrer || "";
+  const itemUrl = item.finalUrl || item.url || "";
+
+  for (const tab of tabs) {
+    if (tab.id == null) continue;
+    if (!(await isWindowEnabled(tab.windowId))) continue;
+
+    const tabUrl = tab.url || "";
+    const host = hostnameFromUrl(tabUrl);
+    if (host && isAllowedHost(host, settings.allowedDomains)) continue;
+
+    try {
+      if (referrer && tabUrl) {
+        const refOrigin = new URL(referrer).origin;
+        const tabOrigin = new URL(tabUrl).origin;
+        if (refOrigin === tabOrigin) {
+          return { match: true, domain: host, target: itemUrl };
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return { match: false };
+}
+
 /* ─── Ciclo de vida ──────────────────────────────────────────────── */
 
 chrome.runtime.onInstalled.addListener(async () => {
@@ -295,11 +459,13 @@ chrome.runtime.onInstalled.addListener(async () => {
   }
   await restoreWindowStates();
   await refreshAllBadges();
+  await refreshNetworkLockdownRules();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await restoreWindowStates();
   await refreshAllBadges();
+  await refreshNetworkLockdownRules();
 });
 
 chrome.windows.onCreated.addListener(async (win) => {
@@ -313,6 +479,7 @@ chrome.windows.onCreated.addListener(async (win) => {
 chrome.windows.onRemoved.addListener(async (windowId) => {
   windowEnabled.delete(windowId);
   await persistWindowStates();
+  await refreshNetworkLockdownRules();
 });
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
@@ -321,12 +488,34 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 
 chrome.tabs.onCreated.addListener(async (tab) => {
   if (tab.id != null) await refreshBadgeForTab(tab.id);
+  await refreshNetworkLockdownRules();
+});
+
+chrome.tabs.onRemoved.addListener(async () => {
+  await refreshNetworkLockdownRules();
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  if (changeInfo.url || changeInfo.status === "loading") {
+    await refreshNetworkLockdownRules();
+    await refreshBadgeForTab(tabId);
+  }
+});
+
+chrome.tabs.onAttached.addListener(async () => {
+  await refreshNetworkLockdownRules();
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   if (changes.blockedToday || changes.allowedDomains) {
     refreshAllBadges();
+  }
+  if (changes.allowedDomains || changes.layers) {
+    refreshNetworkLockdownRules();
+  }
+  if (changes.layers) {
+    broadcastLayersToAllTabs();
   }
 });
 
@@ -371,6 +560,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         windowId,
         enabled,
         allowedDomains: settings.allowedDomains,
+        layers: settings.layers,
         blockedToday: settings.blockedToday,
         blockedLog: settings.blockedLog,
       });
@@ -387,6 +577,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       await setWindowEnabled(windowId, message.enabled === true);
       sendResponse({ ok: true, windowId, enabled: message.enabled === true });
+    })();
+    return true;
+  }
+
+  if (message.type === "SET_LAYERS") {
+    (async () => {
+      const layers = normalizeLayers(message.layers);
+      await chrome.storage.local.set({ layers });
+      await broadcastLayersToAllTabs();
+      await refreshNetworkLockdownRules();
+      sendResponse({ ok: true, layers });
     })();
     return true;
   }
@@ -427,6 +628,18 @@ async function shouldCloseCreatedTab(tab) {
 
   const pending = tab.pendingUrl || tab.url || "";
   if (isBrowserInternalUrl(pending)) return { close: false };
+
+  // No cerrar navegaciones al mismo dominio (comportamiento web normal).
+  try {
+    if (openerHost && pending) {
+      const targetHost = hostnameFromUrl(pending);
+      if (targetHost && targetHost === openerHost) {
+        return { close: false };
+      }
+    }
+  } catch {
+    /* ignore */
+  }
 
   return {
     close: true,
@@ -505,6 +718,18 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(async (details) => {
 
     if (isBrowserInternalUrl(details.url)) return;
 
+    // Solo cerrar si el destino es de otro dominio.
+    try {
+      const targetHost = hostnameFromUrl(details.url || "");
+      if (sourceHost && targetHost && sourceHost === targetHost) {
+        authorizedTabIds.add(details.tabId);
+        setTimeout(() => authorizedTabIds.delete(details.tabId), RECENT_AUTH_MS);
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+
     await chrome.tabs.remove(details.tabId);
     await recordBlock({
       domain: sourceHost,
@@ -543,4 +768,33 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 (async () => {
   await restoreWindowStates();
   await refreshAllBadges();
+  await refreshNetworkLockdownRules();
 })();
+
+/* ─── Cancelar descargas desde ventanas protegidas ───────────────── */
+
+if (chrome.downloads?.onCreated) {
+  chrome.downloads.onCreated.addListener(async (item) => {
+    try {
+      const decision = await downloadMatchesProtectedTab(item);
+      if (!decision.match) return;
+
+      await chrome.downloads.cancel(item.id);
+      try {
+        await chrome.downloads.erase({ id: item.id });
+      } catch {
+        /* ignore */
+      }
+
+      await recordBlock({
+        domain: decision.domain || "",
+        target: decision.target || item.url || "",
+        type: "download",
+        timestamp: Date.now(),
+      });
+      console.warn("[Strict Popup Blocker] Descarga cancelada:", item.url);
+    } catch (err) {
+      console.warn("[Strict Popup Blocker] Error al cancelar descarga:", err);
+    }
+  });
+}

@@ -1,9 +1,15 @@
 (() => {
   "use strict";
 
-  // Por defecto OFF hasta saber el estado de ESTA ventana.
   let enabled = false;
   let allowedDomains = [];
+  let layers = {
+    cookiesJs: false,
+    cookiesHttp: false,
+    downloads: false,
+    storage: false,
+    trackers: false,
+  };
   let windowId = null;
   let userGestureAt = 0;
   let lastClickHref = "";
@@ -17,6 +23,17 @@
   };
 
   const currentAllowed = () => isAllowedHost(location.hostname);
+  const baseActive = () => enabled && !currentAllowed();
+  const layerActive = (name) => baseActive() && layers[name] === true;
+
+  const isExternalHref = (href) => {
+    try {
+      const target = new URL(href, location.href);
+      return target.hostname !== location.hostname;
+    } catch {
+      return false;
+    }
+  };
 
   const pushSettingsToPage = () => {
     window.postMessage(
@@ -25,6 +42,7 @@
         type: "SETTINGS",
         enabled,
         allowedDomains,
+        layers,
       },
       "*"
     );
@@ -34,6 +52,9 @@
     if (typeof next.enabled === "boolean") enabled = next.enabled;
     if (Array.isArray(next.allowedDomains)) {
       allowedDomains = next.allowedDomains;
+    }
+    if (next.layers && typeof next.layers === "object") {
+      layers = { ...layers, ...next.layers };
     }
     if (next.windowId != null) windowId = next.windowId;
     pushSettingsToPage();
@@ -65,7 +86,7 @@
         },
       });
     } catch {
-      /* extension context invalidated */
+      /* ignore */
     }
   };
 
@@ -78,6 +99,7 @@
         applySettings({
           enabled: state.enabled === true,
           allowedDomains: state.allowedDomains,
+          layers: state.layers,
           windowId: state.windowId,
         });
       }
@@ -111,6 +133,10 @@
         : [];
       pushSettingsToPage();
     }
+    if (changes.layers) {
+      layers = { ...layers, ...(changes.layers.newValue || {}) };
+      pushSettingsToPage();
+    }
   });
 
   const markGesture = () => {
@@ -138,7 +164,7 @@
   document.addEventListener(
     "click",
     (event) => {
-      if (!enabled || currentAllowed()) return;
+      if (!baseActive()) return;
       if (event.defaultPrevented) return;
 
       const link = event.target?.closest?.("a[href]");
@@ -158,15 +184,25 @@
         return;
       }
 
-      if (target === "_blank" || target === "_new") {
+      // Solo bloquear _blank hacia dominios externos (menos rotura en la web).
+      if (
+        (target === "_blank" || target === "_new") &&
+        isExternalHref(href)
+      ) {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        console.warn(
-          "[Strict Popup Blocker] Enlace target=_blank bloqueado:",
-          href
-        );
         recordBlock(href, "target=_blank");
+        return;
+      }
+
+      // Descargas: solo con la capa activa, y solo atributo download
+      // (no adivinar por extensión de archivo).
+      if (layerActive("downloads") && link.hasAttribute("download")) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        recordBlock(href, "download.link");
         return;
       }
 
@@ -183,7 +219,7 @@
   document.addEventListener(
     "auxclick",
     (event) => {
-      if (!enabled || currentAllowed()) return;
+      if (!baseActive()) return;
       if (event.button !== 1) return;
       authorizeNextTab("auxclick");
     },
@@ -214,6 +250,9 @@
   window.__strictPopupBlockerContent = {
     get enabled() {
       return enabled;
+    },
+    get layers() {
+      return { ...layers };
     },
     get allowed() {
       return currentAllowed();

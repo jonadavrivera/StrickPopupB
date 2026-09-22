@@ -4,6 +4,15 @@ export const STORAGE_KEYS = {
   BLOCKED_TODAY_DATE: "blockedTodayDate",
   BLOCKED_LOG: "blockedLog",
   DEFAULT_WINDOW_ENABLED: "defaultWindowEnabled",
+  LAYERS: "layers",
+};
+
+export const DEFAULT_LAYERS = {
+  cookiesJs: false,
+  cookiesHttp: false,
+  downloads: false,
+  storage: false,
+  trackers: false,
 };
 
 export const DEFAULT_SETTINGS = {
@@ -11,14 +20,12 @@ export const DEFAULT_SETTINGS = {
   blockedToday: 0,
   blockedTodayDate: "",
   blockedLog: [],
-  /** Las ventanas nuevas arrancan en OFF. */
   defaultWindowEnabled: false,
+  layers: { ...DEFAULT_LAYERS },
 };
 
 export const MAX_LOG_ENTRIES = 50;
 
-/** Ventana de gesto de usuario (ms). En modo estricto no se usa para permitir popups. */
 export const USER_GESTURE_WINDOW_MS = 500;
 
-/** Tiempo en que una apertura autorizada por whitelist permanece marcada (ms). */
 export const AUTH_WINDOW_MS = 1500;

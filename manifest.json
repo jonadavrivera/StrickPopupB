@@ -1,14 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Strict Popup Blocker",
-  "version": "1.1.0",
-  "description": "Bloquea popups por ventana: actívalo solo donde lo necesites (incluida incógnito).",
+  "version": "1.3.0",
+  "description": "Bloqueo de popups por ventana, con capas opcionales de cookies, descargas y trackers.",
   "permissions": [
     "storage",
     "tabs",
     "windows",
     "webNavigation",
-    "scripting"
+    "scripting",
+    "downloads",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "<all_urls>"
